@@ -1,0 +1,142 @@
+name: Deploy CorpX Documentation
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '.gitignore'
+      - 'README.md'
+      - 'CONTRIBUTING.md'
+      - 'LICENSE'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Enforce a maximum of 1 active run at all times; cancel pending/stale runs
+concurrency:
+  group: corpx-docs-deployment
+  cancel-in-progress: true
+
+# Hardened default permissions (least privilege)
+permissions:
+  contents: read
+
+jobs:
+  # ==========================================
+  # JOB 1: TEST
+  # ==========================================
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Linters
+        run: npm run lint --if-present
+
+      - name: Run Verification Scripts
+        env:
+          URL_CHECKER_TIMEOUT: ${{ vars.URL_CHECKER_TIMEOUT || '15' }}
+        run: |
+          echo "Using URL_CHECKER_TIMEOUT: $URL_CHECKER_TIMEOUT seconds"
+          if [ -d "script" ]; then
+            for file in script/*.js script/**/*.js; do
+              if [ -f "$file" ]; then
+                echo "Executing $file..."
+                node "$file"
+              fi
+            done
+          fi
+
+  # ==========================================
+  # JOB 2: BUILD
+  # ==========================================
+  build:
+    name: Build Static Pages
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - name: Build 11ty Site
+        env:
+          PATH_PREFIX: "/${{ github.event.repository.name }}/"
+        run: |
+          echo "Building with PATH_PREFIX: $PATH_PREFIX"
+          npm run build
+
+      - name: Upload Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './_site'
+
+  # ==========================================
+  # JOB 3: DEPLOY
+  # ==========================================
+  deploy:
+    name: Deploy to GitHub Pages
+    runs-on: ubuntu-latest
+    needs: build
+    # Only deploy when pushing to main or triggering manually
+    if: (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+      issues: write
+      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Create Status Issue via GitHub CLI
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_OUTCOME: ${{ steps.deployment.outcome }}
+          DEPLOY_PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          CURRENT_DATE=$(date +'%Y-%m-%d')
+          
+          if [ "$DEPLOY_OUTCOME" = "success" ]; then
+            STATUS="succeeded"
+            FINAL_URL="$DEPLOY_PAGE_URL"
+          else
+            STATUS="failed"
+            FINAL_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          fi
+
+          gh issue create \
+            --title "$CURRENT_DATE - Deployment: $STATUS" \
+            --body "URL: $FINAL_URL"
