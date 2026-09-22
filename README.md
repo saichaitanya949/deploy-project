@@ -169,3 +169,8 @@ spruecss-eleventy-documentation-template/
 - **scss**: The Sass files.
 - **shortcodes**: The available shortcodes.
 - **transforms**: The transformations.
+
+
+## Project Submission Links
+
+- **GitHub Repository URL**: https://github.com/saichaitanya949/deploy-project
